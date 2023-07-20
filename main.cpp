@@ -1,94 +1,46 @@
 #include <windows.h>
 #include <vector>
+#include <set>
 #include <random>
+#include <iostream>
+#include <tlhelp32.h>
+#include <codecvt>
+#include <algorithm>
+#include <chrono>
+
+#include "MovingWindow.h"
+#include "MainWindow.h"
 
 
-#define ID_OK_BTN	2000
-#define DELAY_TIME  2             // microseconds
-#define GRAVITY 300               // pixels/second^2
-#define INITIAL_SPEED 50         // pixels/second
-#define RESTITUTION  0.9          // Î∞òÎ∞ú Í≥ÑÏàò
+using namespace std::chrono;
 
-
-class MovingWindow;
+std::set<std::wstring> excludingApps = {
+        L"explorer.exe", L"KakaoTalk.exe", L"chrome.exe", L"clion64.exe",
+        L"SystemSettings.exe", L"svchost.exe", L"ApplicationFrameHost.exe", L"TextInputHost.exe", L"Adobe Desktop Service.exe"
+};
+const int windowWidth = 260, windowHeight = 260;
 
 int desktopWidth, desktopHeight;
-int windowWidth = 260, windowHeight = 260;
 int nWindow = 0;
+bool running = false;
+MainWindow mainWindow;
 std::vector<MovingWindow*> vMovingWindow;
-BOOL running = FALSE;
 HINSTANCE g_hInst;
-LPCTSTR lpszClass = "HelloWinAPI";
+HHOOK hKeyboardHook;
+HHOOK hMouseHook;
+LPCTSTR lpszClass = "BouncingWindows";
 
-DWORD WINAPI ThreadFunction(LPVOID);
+
+void GetEntries(std::vector<PROCESSENTRY32W> &pids);
 BOOL CALLBACK EnumWindowsProcMy(HWND, LPARAM);
+DWORD WINAPI ThreadFunction(LPVOID);
 LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
-
-class MovingWindow {
-public:
-    MovingWindow(HWND hwnd_, double vx_, double vy_);
-    void geometry();
-    void geometry(int x_, int y_, int width_, int height_);
-    void accelerate();
-    void move();
-    HWND getHwnd() { return hwnd; }
-private:
-    HWND hwnd;
-    RECT initialRect;
-    int width, height;
-    double x, y;
-    double vx, vy;
-};
-
-MovingWindow::MovingWindow(HWND hwnd_, double vx_, double vy_) {
-    hwnd = hwnd_, vx = vx_, vy = vy_;
-    GetWindowRect(hwnd, &initialRect);
-    geometry();
-}
-
-void MovingWindow::geometry() {  // initialize geometry
-    geometry(initialRect.left, initialRect.top, initialRect.right - initialRect.left, initialRect.bottom - initialRect.top);
-}
-
-void MovingWindow::geometry(int x_, int y_, int width_, int height_) {
-    x = x_, y = y_, width = width_, height = height_;
-}
-
-void MovingWindow::accelerate() {
-    if (x < 0) {
-        x = 0;
-        vx *= -RESTITUTION;
-    }
-    else if (x > desktopWidth - width) {
-        x = desktopWidth - width;
-        vx *= -RESTITUTION;
-    }
-    if (y < 0) {
-        y = 0;
-        vy *= -RESTITUTION;
-    }
-    else if (y > desktopHeight - height) {
-        y = desktopHeight - height;
-        vy *= -RESTITUTION;
-    }
-    double delta_vy = GRAVITY * DELAY_TIME / 1000.0;
-    x += vx;
-    y += vy + delta_vy / 2;
-    vy += delta_vy;
-}
-
-void MovingWindow::move() {
-    SetWindowPos(hwnd, 0, round(x), round(y), width, height, SWP_NOREDRAW | SWP_NOZORDER);
-    // SetWindowLongPtr(hWnd, GWL_STYLE, dwNewStyles);
-    // RedrawWindow(hwnd, 0, 0, RDW_INVALIDATE | RDW_FRAME);
-}
 
 
 int APIENTRY WinMain(HINSTANCE hInstance,
                      HINSTANCE hPrevInstance,
                      LPSTR lpszCmdParam,
-                     int nCmdShow)
-{
+                     int nCmdShow) {
     RECT desktop;
     const HWND hDesktop = GetDesktopWindow();
     GetWindowRect(hDesktop, &desktop);
@@ -102,31 +54,45 @@ int APIENTRY WinMain(HINSTANCE hInstance,
     WndClass.cbClsExtra = 0;
     WndClass.cbWndExtra = 0;
     WndClass.hbrBackground = (HBRUSH)GetStockObject(WHITE_BRUSH);
-    WndClass.hCursor = LoadCursor(NULL, IDC_ARROW);
-    WndClass.hIcon = LoadIcon(NULL, IDI_APPLICATION);
+    WndClass.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    WndClass.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
     WndClass.hInstance = hInstance;
     WndClass.lpfnWndProc = (WNDPROC)WndProc;
     WndClass.lpszClassName = lpszClass;
     WndClass.lpszMenuName = nullptr;
     WndClass.style = CS_HREDRAW | CS_VREDRAW;
-    RegisterClass(&WndClass);     //Î©îÏù∏ÏúàÎèÑÏö∞ ÌÅ¥ÎûòÏä§ Îì±Î°ù
+    RegisterClass(&WndClass);     //∏ﬁ¿Œ¿©µµøÏ ≈¨∑°Ω∫ µÓ∑œ
 
-    hwnd = CreateWindow(lpszClass,			//ÏúàÎèÑÏö∞ÌÅ¥ÎûòÏä§ Ïù¥Î¶Ñ
-                        "Windows Show",			        //ÏúàÎèÑÏö∞ÌÉÄÏù¥ÌãÄ
-                        WS_OVERLAPPEDWINDOW | WS_VISIBLE,   //ÏúàÎèÑÏö∞Ïä§ÌÉÄÏùº
-                        (desktopWidth - windowWidth) / 2, (desktopHeight - windowHeight) / 2,							//ÏúàÎèÑÏö∞Í∞Ä Î≥¥ÏùºÎïå X YÏ¢åÌëú
-                        windowWidth, windowHeight,							//ÏúàÎèÑÏö∞Ïùò Ìè≠Í≥º ÎÜíÏù¥
-                        (HWND)NULL,							//Î∂ÄÎ™®ÏúàÎèÑÏö∞ Ìï∏Îì§
-                        (HMENU)NULL,						//ÏúàÎèÑÏö∞Í∞Ä Í∞ÄÏßÄÎäî Î©îÎâ¥Ìï∏Îì§
-                        hInstance,							//Ïù∏Ïä§ÌÑ¥Ïä§Ìï∏Îì§
-                        NULL);								//Ïó¨Î∂ÑÏùò Îç∞Ïù¥ÌÑ∞
-
-    if (hwnd == NULL)
-        return 0;
-
+    hwnd = CreateWindow(lpszClass,			                 //¿©µµøÏ ≈¨∑°Ω∫ ¿Ã∏ß
+                        "Don't Touch!",			             //¿©µµøÏ ≈∏¿Ã∆≤
+                        WS_OVERLAPPEDWINDOW | WS_VISIBLE,    //¿©µµøÏ Ω∫≈∏¿œ
+                        (desktopWidth - windowWidth) / 2,
+                        (desktopHeight - windowHeight) / 2,	 //¿©µµøÏ∞° ∫∏¿œ ∂ß X Y¡¬«•
+                        windowWidth, windowHeight,			 //¿©µµøÏ¿« ∆¯∞˙ ≥Ù¿Ã
+                        (HWND)nullptr,						 //∫Œ∏ ¿©µµøÏ «⁄µÈ
+                        (HMENU)nullptr,						 //¿©µµøÏ∞° ∞°¡ˆ¥¬ ∏ﬁ¥∫ «⁄µÈ
+                        hInstance,							 //¿ŒΩ∫≈œΩ∫ «⁄µÈ
+                        nullptr);							 //ø©∫–¿« µ•¿Ã≈Õ
+    if (hwnd == nullptr) return 1;
     ShowWindow(hwnd, nCmdShow);
+    SetWindowLong(hwnd, GWL_STYLE,
+                  GetWindowLong(hwnd, GWL_STYLE) & ~WS_MAXIMIZEBOX);
+    mainWindow.create(hwnd, g_hInst);
 
-    EnumWindows(EnumWindowsProcMy, NULL);
+    std::vector<PROCESSENTRY32W> entries;
+    GetEntries(entries);
+    EnumWindows(EnumWindowsProcMy, reinterpret_cast<LPARAM>(&entries));
+
+    hKeyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, (HOOKPROC) [](int nCode, WPARAM wParam, LPARAM lParam) {
+        if (nCode == HC_ACTION && (wParam == WM_SYSKEYDOWN || wParam == WM_KEYDOWN))
+            mainWindow.TouchProc(vMovingWindow, nCode, wParam, lParam);
+        return CallNextHookEx(hKeyboardHook, nCode,wParam,lParam);
+    }, g_hInst, NULL);
+    /*hMouseHook = SetWindowsHookEx(WH_MOUSE_LL, (HOOKPROC) [](int nCode, WPARAM wParam, LPARAM lParam) {
+        if (nCode == HC_ACTION && (wParam == WM_LBUTTONDOWN || wParam == WM_RBUTTONDOWN))
+            mainWindow.TouchProc(vMovingWindow, nCode, wParam, lParam);
+        return CallNextHookEx(hMouseHook, nCode,wParam,lParam);
+    }, g_hInst, NULL);*/
 
     DWORD dwThreadID;
     HANDLE hThread = CreateThread(nullptr, 0, ThreadFunction, nullptr, 0, &dwThreadID);
@@ -134,7 +100,7 @@ int APIENTRY WinMain(HINSTANCE hInstance,
     if (hThread == nullptr)
         ExitProcess(3);
 
-    while (GetMessage(&Message, 0, 0, 0)) {
+    while (GetMessage(&Message, nullptr, 0, 0)) {
         TranslateMessage(&Message);
         DispatchMessage(&Message);
     }
@@ -142,114 +108,147 @@ int APIENTRY WinMain(HINSTANCE hInstance,
     return Message.wParam;
 }
 
+
+void GetEntries(std::vector<PROCESSENTRY32W> &entries) {
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    // Do use a proper RAII type for this so it's robust against exceptions and code changes.
+    auto cleanupSnap = [snap] { CloseHandle(snap); };
+
+    PROCESSENTRY32W entry;
+    entry.dwSize = sizeof entry;
+
+    if (!Process32FirstW(snap, &entry)) {
+        cleanupSnap();
+        return;
+    }
+
+    do {
+        if (std::none_of(excludingApps.begin(), excludingApps.end(),
+                        [entry](const std::wstring& bouncingAppName) {
+            /* std::wcout << std::wstring(entry.szExeFile) << std::endl; */ return entry.szExeFile == bouncingAppName;
+        })) {
+            entries.emplace_back(entry/*.th32ProcessID*/);
+        }
+    } while (Process32NextW(snap, &entry));
+    cleanupSnap();
+
+    /*
+    std::cout << "ProcessIDs: ";
+    for (PROCESSENTRY32W entry : entries) std::cout << entry.th32ProcessID << " ";
+    std::cout << std::endl;
+     */
+}
+
+
+BOOL CALLBACK EnumWindowsProcMy(HWND hwnd, LPARAM lParam) {
+    if (!IsWindowVisible(hwnd)) return TRUE;
+
+    const auto &entries = *reinterpret_cast<std::vector<PROCESSENTRY32W>*>(lParam);
+    DWORD winId;
+    GetWindowThreadProcessId(hwnd, &winId);
+    std::wstring exePath;
+    for (PROCESSENTRY32W entry : entries) {
+        if (entry.th32ProcessID == winId) exePath = entry.szExeFile;
+    }
+    if (std::none_of(std::begin(entries), std::end(entries),
+                     [winId](PROCESSENTRY32W entry) { return winId == entry.th32ProcessID; })) {
+        return TRUE;  // if winId not in pids: return
+    }
+    std::wcout << "Process ID: " << winId << " / exePath: " << exePath << std::endl;
+
+    /*
+    std::wstring title(GetWindowTextLength(hwnd) + 1, L'\0');
+    GetWindowTextW(hwnd, &title[0], title.size()); //note: C++11 only
+
+    std::cout << "Found window" << "\n";
+    std::wcout << "Title: " << title << "\n";
+     */
+
+    WINDOWPLACEMENT placement;
+    placement.length = sizeof(placement);
+    GetWindowPlacement(hwnd, &placement);
+
+    BOOL minimized = (placement.showCmd & SW_SHOWMINIMIZED) != 0;
+    if (minimized) {
+        placement.showCmd = SW_SHOWNORMAL;
+        SetWindowPlacement(hwnd, &placement);
+    }
+
+    RECT rect;
+    GetWindowRect(hwnd, &rect);
+
+    // Random degree
+    std::random_device rd;
+    std::mt19937 mt(rd());
+    std::uniform_real_distribution<double> dist(0.0, 3.141592);
+    double degree = dist(mt);
+    auto mw = new MovingWindow(hwnd, desktopWidth, desktopHeight, INITIAL_SPEED * cos(degree), INITIAL_SPEED * sin(degree));
+
+    int width = rect.right - rect.left;
+    int height = rect.bottom - rect.top;
+
+    mw->geometry((desktopWidth - width) / 2, (desktopHeight - height) / 2, width, height);
+    mw->move();
+    PostMessage(hwnd, WM_SYSCOMMAND, SC_RESTORE, 0);
+
+    vMovingWindow.push_back(mw);
+    nWindow++;
+    return TRUE;
+}
+
+
 DWORD WINAPI ThreadFunction(LPVOID lpParam) {
-    running = TRUE;
-    // Bounce
-    while(running) {
-        Sleep(DELAY_TIME);
+    running = true;
+    auto moveWindow = [] {
         for (auto iter = vMovingWindow.begin(); iter != vMovingWindow.end(); iter++) {
-            if ((**iter).getHwnd() == nullptr) {
+            if ((*iter)->getHwnd() == nullptr) {
                 vMovingWindow.erase(iter);
                 continue;
             }
-            (**iter).accelerate();
-            (**iter).move();
+            (*iter)->refreshRestitution();
+            (*iter)->accelerate();
+            (*iter)->move();
         }
+    };
+    milliseconds test_start = duration_cast<milliseconds>(system_clock::now().time_since_epoch());
+    moveWindow();
+    milliseconds test_end = duration_cast<milliseconds>(system_clock::now().time_since_epoch());
+    milliseconds moving_time = test_end - test_start;
+    int delay_time = DELAY_TIME - moving_time.count();
+    delay_time = delay_time > 0 ? delay_time : 1;
+    std::cout << delay_time  << std::endl;
+    // Bounce
+    while (running) {
+        Sleep(delay_time);
+        moveWindow();
     }
     // Recovery
-    for (auto & iter : vMovingWindow) {
-        (*iter).geometry();
+    for (auto movingWindow : vMovingWindow) {
+        movingWindow->geometry();
     }
 
     return 0;
 }
 
-BOOL CALLBACK EnumWindowsProcMy(HWND hwnd, LPARAM lParam)
-{
-    DWORD lpdwProcessId;
-    GetWindowThreadProcessId(hwnd, &lpdwProcessId);
-    if (lpdwProcessId == lParam) {
-        return TRUE;
-    }
 
-    if (IsWindowVisible(hwnd)) {
-        WINDOWPLACEMENT placement;
-        placement.length = sizeof(placement);
-
-        GetWindowPlacement(hwnd, &placement);
-
-        BOOL minimized = (placement.showCmd & SW_SHOWMINIMIZED) != 0;
-        if (minimized) {
-            placement.showCmd = SW_SHOWNORMAL;
-            SetWindowPlacement(hwnd, &placement);
-        }
-
-        // Random degree
-        std::random_device rd;
-        std::mt19937 mt(rd());
-        std::uniform_real_distribution<double> dist(0.0, 3.141592);
-        double degree = dist(mt);
-        auto* mw = new MovingWindow(hwnd, INITIAL_SPEED * cos(degree), INITIAL_SPEED * sin(degree));
-
-        mw->geometry((desktopWidth - windowWidth) / 2, (desktopHeight - windowHeight) / 2, windowWidth, windowHeight);
-        mw->move();
-        PostMessage(hwnd, WM_SYSCOMMAND, SC_RESTORE, 0);
-
-        vMovingWindow.push_back(mw);
-        nWindow++;
-    }
-    return TRUE;
-}
-
-LRESULT CALLBACK WndProc(HWND hwnd, UINT iMessage,
-                         WPARAM wParam, LPARAM lParam)
-{
-    LPCTSTR text = "Î©îÏù∏ÏúàÎèÑÏö∞ ÏÉùÏÑ±";
+LRESULT CALLBACK WndProc(HWND hwnd, UINT iMessage, WPARAM wParam, LPARAM lParam) {
     switch (iMessage) {
-        case WM_PAINT:
-        {
-            PAINTSTRUCT ps;
-            HDC hdc = BeginPaint(hwnd, &ps);
-            TextOut(hdc, 0, 0, text, lstrlen(text));
-            EndPaint(hwnd, &ps);
-            return 0;
-        }
         case WM_CREATE:
-        {
-            HWND hChildWnd = CreateWindow(
-                    "button",        		// ÏúàÎèÑÏö∞ ÌÅ¥ÎûòÏä§ Ïù¥Î¶Ñ
-                    "Î≤ÑÌäº",	            // ÏúàÎèÑÏö∞ ÌÉÄÏù¥ÌãÄ
-                    WS_CHILD | WS_VISIBLE, 	// ÏúàÎèÑÏö∞ Ïä§ÌÉÄÏùº
-                    0,                      // ÏúàÎèÑÏö∞ Î≥¥Ïùº Îïå x Ï¢åÌëú
-                    50,                     // ÏúàÎèÑÏö∞ Î≥¥Ïùº Îïå y Ï¢åÌëú
-                    100,                    // ÏúàÎèÑÏö∞ Ìè≠
-                    30,                     // ÏúàÎèÑÏö∞ ÎÜíÏù¥
-                    hwnd,         	        // Î∂ÄÎ™® ÏúàÎèÑÏö∞
-                    (HMENU)ID_OK_BTN,       // Ïª®Ìä∏Î°§ ID
-                    g_hInst,           	    // Ïù∏Ïä§ÌÑ¥Ïä§ Ìï∏Îì§
-                    (LPVOID)nullptr);          // Ïó¨Î∂ÑÏùò Îç∞Ïù¥ÌÑ∞
-
-            if (!hChildWnd) 	return -1;
-            return 0;
-        }
+            mainWindow.onWMCreate(iMessage, wParam, lParam);
+            break;
+        case WM_PAINT:
+            mainWindow.onWMPaint(iMessage, wParam, lParam);
+            break;
         case WM_COMMAND:
-        {
-            if (LOWORD(wParam) == ID_OK_BTN)
-            {
-                /*
-                SetWindowPos(hWnd, 0, 500, 500, 300, 300, SWP_NOREDRAW | SWP_NOZORDER);
-                // SetWindowLongPtr(hWnd, GWL_STYLE, dwNewStyles);
-                RedrawWindow(hWnd, 0, 0, RDW_INVALIDATE | RDW_FRAME);
-                */
-                MessageBox(hwnd, "Î≤ÑÌäºÏù¥ ÌÅ¥Î¶≠ÎêòÏóàÏäµÎãàÎã§.", "Î©îÏãúÏßÄ", MB_OK);
-            }
-
-            return 0;
-        }
+            mainWindow.onWMCommand(iMessage, wParam, lParam);
+            break;
         case WM_DESTROY:
-            running = FALSE;
+            running = false;
+            mainWindow.onWMDestroy(iMessage, wParam, lParam);
             PostQuitMessage(0);
-            return 0;
+            break;
+        default:
+            return DefWindowProc(hwnd, iMessage, wParam, lParam);
     }
-    return DefWindowProc(hwnd, iMessage, wParam, lParam);
+    return 0;
 }
